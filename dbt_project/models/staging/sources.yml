@@ -1,0 +1,38 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw data loaded by PySpark ingestion scripts
+    schema: raw
+    tables:
+      - name: weather_hourly
+        description: Hourly weather data from Open-Meteo API
+        columns:
+          - name: id
+            description: Primary key
+          - name: timestamp
+            description: Hour of the reading
+          - name: city
+            description: City name
+          - name: temperature
+            description: Temperature in Celsius
+          - name: humidity
+            description: Relative humidity percent
+          - name: windspeed
+            description: Wind speed in km/h
+          - name: precipitation
+            description: Precipitation in mm
+
+      - name: air_quality
+        description: Air quality data from OpenAQ API
+        columns:
+          - name: id
+          - name: timestamp
+          - name: city
+          - name: parameter
+            description: Pollutant type e.g. pm25
+          - name: value
+            description: Measurement value
+          - name: unit
+          - name: location
+            description: Monitoring station name

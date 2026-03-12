@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: stg_weather
+    description: Cleaned hourly weather data
+    columns:
+      - name: measured_at
+        tests: [not_null]
+      - name: city_name
+        tests: [not_null]
+      - name: temperature_celsius
+        tests: [not_null]
+      - name: humidity_pct
+        tests: [not_null]
+
+  - name: stg_air_quality
+    description: Cleaned air quality readings
+    columns:
+      - name: measured_at
+        tests: [not_null]
+      - name: city_name
+        tests: [not_null]
+      - name: pollutant_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['PM25', 'PM10', 'O3', 'NO2', 'CO', 'SO2']
+      - name: measurement_value
+        tests: [not_null]

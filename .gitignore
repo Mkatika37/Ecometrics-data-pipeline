@@ -1,0 +1,26 @@
+# Environments
+.env
+venv/
+.venv/
+
+# Python caching
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build artifacts
+*.egg-info
+dist/
+build/
+
+# Logs
+logs/
+
+# Spark
+spark-warehouse/
+derby.log
+metastore_db/
+*.jar
+
+# System
+.DS_Store

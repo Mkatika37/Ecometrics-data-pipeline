@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: mart_daily_weather
+    description: Daily aggregated weather metrics
+    columns:
+      - name: date
+        tests: 
+          - not_null
+          - unique
+      - name: city_name
+        tests: 
+          - not_null
+      - name: avg_temperature
+        tests: 
+          - not_null
+      - name: avg_humidity
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_daily_aqi
+    description: Daily aggregated air quality by pollutant
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: pollutant_type
+        tests: 
+          - not_null
+          - accepted_values:
+              values: ['PM25', 'PM10', 'O3', 'NO2', 'CO', 'SO2']
+      - name: avg_value
+        tests: 
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+  - name: mart_combined_daily
+    description: Combined weather and PM2.5 data for dashboard
+    columns:
+      - name: date
+        tests: [not_null]
+      - name: city_name
+        tests: [not_null]
