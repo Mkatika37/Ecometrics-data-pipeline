@@ -18,54 +18,47 @@
 EcoMetrics is designed using modern Data Engineering principles. It relies on a containerized infrastructure to extract, load, and structurally model environmental data.
 
 ```mermaid
-graph TD
-    subgraph Data Sources [🌍 1. External APIs]
-        OM[Open-Meteo API]
-        WAQI[WAQI Air Quality API]
-    end
+graph LR
+    %% Data Sources
+    A[☁️ Open-Meteo API]
+    B[🏭 WAQI Air Quality API]
 
-    subgraph Ingestion Layer [🐍 2. PySpark Extraction]
-        FW[fetch_weather.py]
-        FA[fetch_aqi.py]
-    end
+    %% Compute & Processing
+    C[🐍 PySpark Ingestion]
+    E[🔨 dbt Core]
 
-    subgraph Storage [🐘 3. PostgreSQL Raw Tier]
-        RW[(raw.weather_hourly)]
-        RA[(raw.air_quality)]
-    end
+    %% Storage Tiers
+    D[(PostgreSQL: Raw)]
+    F[(Postgres: Staging & Marts)]
 
-    subgraph Transformation Layer [🔨 4. dbt Modeling]
-        SW[stg_weather]
-        SA[stg_air_quality]
-        MW[mart_daily_weather]
-        MA[mart_daily_aqi]
-        MC[mart_combined_daily]
-    end
+    %% Presentation & Orchestration
+    G[📊 Metabase Dashboard]
+    H((🕰️ Apache Airflow))
 
-    subgraph Presentation [📊 5. Visualization]
-        MB[Metabase Dashboard]
-    end
+    %% Data Flow
+    A --> C
+    B --> C
+    C -->|Extracts & Upserts| D
+    D --> E
+    E -->|Transforms & Tests| F
+    F -->|Powers| G
 
-    subgraph Orchestration [🕰️ Apache Airflow]
-        DAG[weather_aqi_pipeline DAG]
-    end
+    %% Orchestration Paths (Dotted)
+    H -.->|Triggers Daily| C
+    H -.->|Orchestrates| E
 
-    OM --> FW
-    WAQI --> FA
-    FW --> RW
-    FA --> RA
-
-    RW --> SW
-    RA --> SA
-    SW --> MW
-    SA --> MA
-    MW --> MC
-    MA --> MC
-    MC -.-> MB
-
-    DAG -.->|Triggers Daily| FW
-    DAG -.->|Triggers Daily| FA
-    DAG -.->|Triggers| Transformation Layer
+    %% Styling
+    classDef storage fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef compute fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px;
+    classDef dash fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef source fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
+    classDef orchestrator fill:#eceff1,stroke:#607d8b,stroke-width:2px;
+    
+    class A,B source;
+    class C,E compute;
+    class D,F storage;
+    class G dash;
+    class H orchestrator;
 ```
 
 ### 🔁 Data Flow Lifecycle
