@@ -1,148 +1,116 @@
 # EcoMetrics: Comprehensive Project Documentation & Architecture Report
 
-This document serves as a deep-dive technical explanation of the **EcoMetrics: End-to-End Weather & AQI Pipeline**. It is designed to act as a complete guide for engineers, recruiters, or stakeholders to fully understand the project's architecture, data handling, code logic, and automated CI/CD processes.
+This document serves as an exhaustive technical deep-dive into the **EcoMetrics: End-to-End Weather & AQI Pipeline**. It is designed for Staff Engineers, Technical Recruiters, and Data Architecture Stakeholders to thoroughly evaluate the system's design patterns, data handling mechanisms, code logic, and automated CI/CD processes.
 
 ---
 
-## 1. End-to-End Workflow
+## 1. Executive Summary & End-to-End Workflow
 
-The primary goal of EcoMetrics is to autonomously ingest distinct environmental data sources, structurally merge them using big-data processing tools, and surface analytical dashboards that track daily operational metrics (Weather vs Air Quality).
+The primary objective of EcoMetrics is to autonomously ingest disparate environmental data sources, structurally normalize them using distributed big-data processing paradigms, and surface low-latency analytical dashboards. These dashboards track critical daily operational metrics, specifically correlating meteorological phenomena with Air Quality Index (AQI) thresholds.
 
-**Step-by-Step Execution Flow:**
-1.  **Schedule Trigger:** Apache Airflow acts as the orchestrator. Every day at 08:00 UTC, the cron scheduler turns on and initiates the `weather_aqi_pipeline` Directed Acyclic Graph (DAG).
-2.  **Health Check:** Airflow first fires an HTTP ping to the Open-Meteo and OpenAQ (WAQI) APIs to ensure their servers are online. If offline, the pipeline halts to save compute resources.
-3.  **Data Ingestion & Spark Processing:** If APIs are healthy, Airflow triggers two separate Python tasks (`fetch_weather.py` and `fetch_aqi.py`). 
-    *   These scripts pull live JSON payloads via HTTP Requests.
-    *   The scripts load that JSON into **Apache Spark (PySpark)** in-memory. Spark strictly enforces data types (e.g., Temperature must be a Float, Date must be a Timestamp) and cleans out any null or malformed data.
-4.  **Database Loading (Upsert):** The cleaned Spark DataFrames push data into a containerized **PostgreSQL** database into the `raw` schema. It uses an `ON CONFLICT DO UPDATE` strategy to ensure that if a script runs twice, data isn't duplicated—it's only updated (Idempotency).
-5.  **Analytics Transformation:** After validating the raw table row counts, Airflow commands **dbt Core** to execute SQL transformations.
-    *   **Staging Tier:** Minor formatting/cleaning (e.g., standardizing capitalization).
-    *   **Marts Tier:** Advanced SQL `GROUP BY` operations that aggregate 24 hours of hourly data into single Daily Averages for Weather and Air Quality, and finally joins the two sources together into a master reporting table.
-6.  **Data Quality Testing:** Airflow runs `dbt test`, applying strict assertions on the database (e.g., ensuring Humidity is never below 0% or above 100%).
-7.  **Dashboarding:** The final processed metrics are queried by a connected **Metabase** container. The pre-computed data populates interactive charts without putting heavy analytical load on the database.
-
----
-
-## 2. Data Handling
-
-### Data Collection & Volume
-The system interacts with two public APIs:
-*   **Open-Meteo:** A 7-day rolling window of hourly forecasts for New York City. At 1 city × 7 days × 24 hours, this represents approximately **168 rows of weather constraints** per run.
-*   **World Air Quality Index (WAQI):** Live readings for 3 cities (New York, LA, Chicago) measuring 4 separate pollutants (PM2.5, PM10, O3, NO2). This yields **12 distinct rows** of pollution constraints per run.
-
-While this project is configured as a small-scale portfolio prototype, the utilization of PySpark means the ingestion layer is horizontally scalable. It could easily process millions of rows if pointed at a larger historical data bucket.
-
-### Storage Mechanisms
-Data is structured hierarchically within **PostgreSQL**:
-*   `raw.weather_hourly` and `raw.air_quality`: The landing zone. Highly granular, untransformed data matching the API layout.
-*   `public_staging`: Filtered subsets of the raw schema.
-*   `public_marts`: The highest-value data. Aggregated daily facts and deeply joined dimensional tables optimized entirely for read-heavy visualization tools.
+**Detailed Step-by-Step Execution Flow:**
+1.  **Schedule Trigger & Orchestration:** Apache Airflow operates as the central control plane. Utilizing a CRON-based scheduler (`0 8 * * *`), the `weather_aqi_pipeline` Directed Acyclic Graph (DAG) is initialized daily at 08:00 UTC. The DAG uses `catchup=False` to prevent execution flooding during prolonged offline periods.
+2.  **Pre-flight Health Checks:** Before allocating compute resources, Airflow executes a `PythonOperator` to ping the Open-Meteo and OpenAQ (WAQI) REST APIs. If an endpoint returns a non-200 HTTP status, the pipeline gracefully halts, logging the failure without triggering downstream processing errors.
+3.  **Data Extraction & Distributed Processing (PySpark):** Upon successful health checks, parallel tasks (`fetch_weather.py` and `fetch_aqi.py`) are triggered.
+    *   **Extraction:** Python's `requests` library retrieves live, deeply nested JSON payloads.
+    *   **Transformation Engine:** The JSON arrays are loaded into an **Apache Spark (PySpark)** in-memory cluster. Spark enforces strict schema validation via `StructType` definitions (e.g., Temperature explicitly cast as `DoubleType()`, Timestamps as `TimestampType()`). Missing values and nulls are sanitized via `.dropna()` and `.filter()` operations to ensure categorical integrity before disk writing.
+4.  **Database Loading (Idempotent Upserts):** The sanitized PySpark DataFrames write localized batches into a containerized **PostgreSQL** instance (`raw` schema). 
+    *   *Engineering Choice:* Instead of standard `INSERT` statements, the JDBC driver executes `ON CONFLICT (timestamp, city) DO UPDATE SET`. This guarantees **Idempotency**—ensuring that multiple pipeline executions on the same day result in accurate data convergence rather than duplicated row anomalies.
+5.  **Analytics Transformation (dbt Core):** Post-ingestion, Airflow triggers a sequence of `BashOperator` commands invoking **Data Build Tool (dbt)** to execute declarative SQL transformations.
+    *   **Staging Tier (Silver):** Normalizes inputs, standardizes timezone formatting, and prepares base views (`stg_weather`, `stg_air_quality`).
+    *   **Marts Tier (Gold):** Executes complex analytical aggregations. Hourly constraints are rolled up utilizing `GROUP BY DATE()`, calculating maximums, minimums, and averages. The final operation materializes a broad fact table (`mart_combined_daily`) performing a composite join across the weather and AQI dimensional models.
+6.  **Data Quality Assurance (dbt test):** Airflow issues a `dbt test` command. This evaluates the materialized tables against assertions defined in `schema.yml` (e.g., verifying `avg_humidity` remains within the `0-100` bounds, and primary keys remain `unique` and `not_null`).
+7.  **Dashboard Visualization:** The finalized, optimized `public_marts` tier is queried directly by a highly-available **Metabase** instance, rendering interactive, zero-latency visualizations indicating environmental standard deviations.
 
 ---
 
-## 3. Project Structure Breakdown
+## 2. Advanced Data Handling & Storage Mechanics
+
+### Data Collection & Payload Volume
+The system interacts with two high-frequency public REST APIs:
+*   **Open-Meteo:** Retrieves a rolling 7-day window of hourly meteorological forecasts for major metropolitan areas. (1 city × 7 days × 24 hours = **~168 discrete payload constraints** per execution).
+*   **World Air Quality Index (WAQI):** Extracts real-time telemetry across 3 target cities (New York, Los Angeles, Chicago) for 4 primary particulate pollutants (PM2.5, PM10, O3, NO2). This yields **12 distinct rows** of pollution constraints per run.
+
+*Scalability Note:* While configured locally for demonstration, the integration of PySpark's DataFrame API ensures the ingestion layer is horizontally scalable. It is natively capable of partitioning and processing terabytes of historical parquet data across a distributed cluster without modifying the codebase.
+
+### Storage Architecture (The Medallion Approach)
+Data persistence is structured hierarchically within **PostgreSQL**, mirroring a modern Data Lakehouse paradigm:
+*   `raw` **(Bronze):** The raw landing zone. Highly granular, untransformed telemetry data matching the origin JSON layout.
+*   `public_staging` **(Silver):** Cleansed, filtered, and typed views.
+*   `public_marts` **(Gold):** Highly aggregated, business-ready dimensional tables explicitly optimized for heavy read-query loads by BI visualization tools.
+
+---
+
+## 3. Comprehensive Project Structure Breakdown
 
 ```text
 Ecometrics-data-pipeline/
 ├── .github/workflows/
-│   └── ci.yml                   # The GitHub Actions file defining cloud CI/CD logic.
+│   └── ci.yml                   # GitHub Actions pipeline logic orchestrating cloud-based Ubuntu environments for CI/CD.
 ├── dags/
 │   ├── utils/
-│   │   └── pipeline_monitor.py  # Helper functions: API pings, Data validations, Slack alerts.
-│   └── weather_pipeline_dag.py  # The Airflow DAG defining task dependencies.
+│   │   └── pipeline_monitor.py  # Utility module housing API pings, row-count validation logic, and the Slack Webhook integration.
+│   └── weather_pipeline_dag.py  # The core Apache Airflow DAG defining task execution order, retries, and failure hooks.
 ├── dbt_project/
 │   ├── models/
-│   │   ├── marts/               # Final Fact/Agg tables (.sql) & data quality tests (.yml).
+│   │   ├── marts/               # Final Fact/Aggregation tables (.sql) & data quality tests (.yml).
 │   │   └── staging/             # Cleaned view models & schema tests.
-│   ├── dbt_project.yml          # dbt global configuration.
-│   └── packages.yml             # External dbt dependencies (like dbt-utils).
+│   ├── dbt_project.yml          # dbt global configuration (naming conventions, target paths).
+│   └── packages.yml             # External dbt dependencies (imports dbt-labs/dbt_utils).
+├── docs/                        # Project documentation, architectural diagrams, and presentation materials.
 ├── ingestion/
-│   ├── fetch_aqi.py             # PySpark script to download and structure pollution data.
-│   └── fetch_weather.py         # PySpark script to download and structure weather data.
-├── lib/                         # Holds the PostgreSQL JDBC driver (.jar) for Spark connections.
-├── scripts/                     # Shell/Batch scripts to automate local deployments.
-├── tests/                       # Pytest unit tests for the ingestion scripts and DAG integrity.
-├── docker-compose.yml           # The Docker mapping creating Postgres, Airflow, and Metabase.
-└── requirements.txt             # Virtual environment Python package dependencies.
+│   ├── fetch_aqi.py             # PySpark script to download, deserialize, and structure WAQI pollution data.
+│   ├── fetch_weather.py         # PySpark script for Open-Meteo extraction and schema enforcement.
+│   ├── create_tables.py         # DDL execution script for bootstrapping Postgres schemas.
+│   └── db_connection.py         # Standardized psycopg2 PostgreSQL connection pooling.
+├── lib/                         # External binaries (PostgreSQL 42.7.1 JDBC driver).
+├── scripts/                     # Shell deployment scripts (run_pipeline.sh for local bootstrap initialization).
+├── tests/                       # Pytest directory featuring mock-driven unit testing for Spark logic and Airflow DAG integrity.
+├── .env.example                 # Template for environment topography (Passwords, Slack Tokens, API Keys).
+├── docker-compose.yml           # Infrastructure-as-Code (IaC) defining the PostgreSQL, Airflow, and Metabase container networking mesh.
+└── requirements.txt             # Python pip package dependencies with strict version pinning.
 ```
 
 ---
 
-## 4. Code Explanation Deep-Dive
+## 4. Automation and CI/CD (DevOps)
 
-### A. The Ingestion Engine: `fetch_weather.py`
-This script connects to the external API, models the data in PySpark, and writes to Postgres.
-*   **Line 20 (`fetch_weather_json()`):** Uses the `requests` library to execute a standard HTTP GET request to the Open-Meteo endpoint. Passes parameters for coordinates and fields. Raises an exception if the status code isn't 200 (OK).
-*   **Line 48 (`transform_weather_with_spark()`):** Initializes a local `SparkSession`. Parses the nested JSON payload into lists. It forces float conversions locally, zips them into tuples, and defines a strict PySpark `StructType` schema. The Spark DataFrame is then created, and native `.withColumn()` commands are used to explicitly cast timestamps, round decimal places, and hardcode the city name to "NEW YORK".
-*   **Line 115 (`load_weather_to_postgres()`):** Uses `psycopg2` to open a Postgres connection. Iterates over the PySpark DataFrame rows to execute the SQL `INSERT ... ON CONFLICT DO UPDATE SET ...` command.
+To guarantee enterprise-grade software reliability and prevent regressions, the pipeline implements **GitHub Actions** for Continuous Integration (CI).
 
-### B. The Orchestrator: `weather_pipeline_dag.py`
-This is an Airflow DAG file using Python definitions to map dependencies using the `>>` bitshift operator.
-*   **`check_api_health_task`**: Defers execution to a custom utility evaluating if URLs return an HTTP 200 status.
-*   **`fetch_weather_task` / `fetch_aqi_task`**: Executes the ingestion scripts inside heavily shielded `PythonOperator` tasks.
-*   **`run_dbt_staging_task` / `run_dbt_marts_task` / `run_dbt_tests_task`**: Uses `BashOperator` to execute command-line `dbt` operations logically ordered from Staging -> Marts -> Tests.
-
-### C. Analytical Modeling: `dbt_project/models/marts/mart_daily_weather.sql`
-*(Example of dbt code structure)*
-```sql
-SELECT 
-    DATE(measured_at) as date,
-    city_name,
-    AVG(temperature_celsius) as avg_temperature,
-    MAX(temperature_celsius) as max_temperature
-FROM {{ ref('stg_weather') }}
-GROUP BY 1, 2
-```
-*   `{{ ref('stg_weather') }}`: Instead of hardcoding table names, dbt uses Jinja interpolation references. This dynamically builds a DAG so dbt knows it must build `stg_weather` before it is allowed to build `mart_daily_weather`.
+1.  **Trigger Mechanism:** CI is initiated upon any `git push` or Pull Request (PR) targeting the `main` branch.
+2.  **Headless Environment Setup:** GitHub Actions provisions an isolated Ubuntu Linux runner, configures Python 3.10, and installs `requirements.txt`. 
+    *   *Crucial Engineering Component:* Airflow historically conflicts with modern SQLAlchemy versions. The CI pipeline resolves this by dynamically fetching Apache's official `--constraint` URL matrix, guaranteeing seamless dependency resolution in the cloud.
+3.  **Automated Unit Testing:** The workflow invokes `pytest`. 
+    *   Utilizing `unittest.mock`, the pipeline simulates API JSON payload returns. This enables PySpark parsing validation to occur rapidly inside the CI runner without requiring live network calls to external APIs or a running Database instance.
+4.  **Deployment Confidence:** This architecture ensures that faulty Python syntax, broken Spark schemas, or cyclical DAG errors are caught *before* they can be merged into the production branch.
 
 ---
 
-## 5. Automation and CI/CD
+## 5. System Operations & Local Bootstrapping
 
-To ensure enterprise-grade software reliability, the pipeline uses **GitHub Actions** for Continuous Integration.
+### Initializing the Environment (Day 1)
+The entire infrastructure is containerized via Docker for seamless replication across operating systems.
+1. Define environment variables in `.env`.
+2. Initialize the containerized network: `docker-compose up -d`.
+3. Bootstrap the database schemas and perform the first historical data load: `bash scripts/run_pipeline.sh`.
 
-1.  **Trigger:** Every time code is pushed or a Pull Request is opened on GitHub, the `.github/workflows/ci.yml` file is activated.
-2.  **Environment Setup:** GitHub automatically spawns an Ubuntu Linux cloud server, installs Python 3.10, and runs `pip install -r requirements.txt`. It uses constraints to perfectly align Airflow dependencies with SQLAlchemy.
-3.  **Unit Testing:** The CI pipeline runs `pytest`. It executes the mock environments inside `tests/` to guarantee that edits to the PySpark code logic haven't broken the JSON-to-DataFrame transformations.
-4.  **Why it matters:** In a real production environment, this prevents broken code from ever being deployed to the live Airflow servers, saving thousands of dollars in potentially bad data processing.
-
----
-
-## 6. Libraries and Dependencies
-
-*   **`apache-airflow==2.8.0`**: The primary scheduler and orchestrator monitoring task health.
-*   **`pyspark==3.5.0`**: Distributed computing engine utilized for its capacity to enforce schema typing and handle big-data transformations in memory.
-*   **`dbt-core & dbt-postgres`**: Compiles SQL select statements into data warehouse table creation scripts.
-*   **`pytest-mock`**: Allows isolated testing of the python logic by "mocking" (faking) the API responses so tests can run without needing Internet or Database access.
-*   **`psycopg2-binary`**: The foundational PostgreSQL database adapter for Python.
-*   **`dbt_utils`**: An external dbt package imported to run advanced bounds testing (like min/max threshold tracking).
+### Lifecycle Management
+*   **Routine Operation:** Apache Airflow manages ongoing extraction scheduling without manual intervention.
+*   **Environment Teardown:** `docker-compose down` gracefully terminates processes and releases CPU/RAM.
+*   **State Persistence:** Due to localized Docker named volumes (`postgres-data`), all database records, Metabase dashboards, and Airflow user states are structurally persisted locally and seamlessly resume upon the next initialization.
 
 ---
 
-## 7. Operational Details
-
-### Starting the Pipeline
-The infrastructure is containerized in Docker, preventing local environment conflicts.
-1.  Run `docker-compose up -d` in the root folder. This downloads and starts PostgreSQL, Airflow, and Metabase in detached mode.
-2.  Run `bash scripts/run_pipeline.sh` to initialize the postgres schemas locally.
-3.  Open `http://localhost:8080`, log in to Airflow, and toggle the `weather_aqi_pipeline` to **ON**. The pipeline typically takes about **45 seconds** to ingest, process, and test the full workflow.
-
-### Shutting Down & Restarting
-*   To halt the system and save RAM/CPU, navigate to the folder and run `docker-compose down`. This safely downs the servers.
-*   Because Docker is configured with named volumes (`postgres-data`), all your data, Airflow logs, and Metabase dashboards are structurally saved to your hard drive and instantly resume when you type `docker-compose up -d` again.
-
----
-
-## 8. Technical Challenges & Considerations
+## 6. Technical Obstacles & Engineering Solutions
 
 **Challenge 1: Airflow CI/CD Dependency Conflicts**
-*   *Issue:* Attempting to install Airflow via basic `pip install` on GitHub Actions resulted in immediate crashing. Airflow requires strict SQLAlchemy dependencies which conflicted with standard package requests.
-*   *Solution:* Implemented Apache's official `--constraint` URL resolution inside the `ci.yml`. This forced pip to evaluate the exact package hashes used by modern Airflow distributions, allowing PySpark and Airflow to coexist peacefully.
+*   *Issue:* Standard continuous integration installations failed because Airflow 2.8 strictly requires `sqlalchemy < 2.0.0`, whereas newer internal components default to SQLAlchemy 2+.
+*   *Resolution:* Engineered the GitHub Actions `ci.yml` file to parse Apache's exact release constraints list (`constraints-3.10.txt`) during installation, establishing a pristine Python virtual environment entirely circumventing version clashes.
 
-**Challenge 2: Incomplete JSON API Formats**
-*   *Issue:* Environmental APIs often have missing time blocks or null values for specific pollutants based on machine downtime at the collection station.
-*   *Solution:* Integrated PySpark to pre-process the data in memory before it ever touched the database. Standard `.dropna()` methods and explicit structural typing were utilized to sanitize unpredictable data inputs, preventing database ingestion errors downstream.
+**Challenge 2: Incomplete Telemetry Data Structures**
+*   *Issue:* Public environmental APIs frequently return sparse JSON arrays due to station downtime (e.g., missing PM2.5 readings for specific hours), causing database `NOT NULL` constraints to fail.
+*   *Resolution:* PySpark was strategically positioned to act as a data validation firewall. Native PySpark commands (`.dropna()`, implicit `.cast()`) aggressively sanitize the JSON stream in memory. If data relies on critical analytics fields, corrupted records are cleanly quarantined before reaching the PostgreSQL warehouse.
 
-**Challenge 3: Idempotent Execution**
-*   *Issue:* If Airflow executes the data pipeline twice in one day, simple `INSERT` statements would duplicate the raw payload.
-*   *Solution:* Engineered Postgres schemas with Primary Keys and engineered psycopg2 scripts using `INSERT INTO ... ON CONFLICT (timestamp, city) DO UPDATE SET ...` logic. This ensures data is seamlessly overwritten to the latest accurate values without duplicating row counts.
+**Challenge 3: Real-Time Operational Monitoring**
+*   *Issue:* Silent pipeline failures result in stale dashboard data, degrading stakeholder trust.
+*   *Resolution:* Integrated Airflow's native `on_failure_callback` hooks. If any task exceptions occur (e.g., API timeout out, Spark memory overflow), a custom Python utility captures the exact Stack Trace, Task ID, and Execution timestamp, immediately formatting and broadcasting a POST request to a dedicated Slack webhook for immediate engineer notification.
