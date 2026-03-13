@@ -18,47 +18,68 @@
 EcoMetrics is designed using modern Data Engineering principles. It relies on a containerized infrastructure to extract, load, and structurally model environmental data.
 
 ```mermaid
-graph LR
-    %% Data Sources
-    A[☁️ Open-Meteo API]
-    B[🏭 WAQI Air Quality API]
+flowchart TB
+    subgraph DC [Docker Compose Infrastructure]
+        direction TB
+        subgraph Pipeline [Data Pipeline Execution]
+            direction LR
+            A[☁️ Open-Meteo<br/>Weather Formats<br/>168 rows/run] --- B[🏭 WAQI<br/>Live AQI<br/>12 rows/run]
+            
+            C[🐍 PySpark<br/>Schema enforce<br/>dropna, type cast]
+            
+            D[(🐘 PostgreSQL<br/>raw schemas<br/>ON CONFLICT upsert)]
+            
+            E[🔨 dbt Core<br/>staging -> marts<br/>AVG • MAX • JOIN]
+            
+            F[(🐘 PostgreSQL<br/>public_marts<br/>optimised for reads)]
+            
+            G[📊 Metabase<br/>Interactive charts<br/>port: 3000]
+            
+            A & B -- JSON fetch --> C
+            C -- JDBC upsert --> D
+            D -- reads raw --> E
+            E -- writes marts --> F
+            F -- SQL query --> G
+        end
 
-    %% Compute & Processing
-    C[🐍 PySpark Ingestion]
-    E[🔨 dbt Core]
+        subgraph Airflow [Orchestration — Apache Airflow]
+            direction LR
+            H((🕰️ DAG @ 08:00 UTC)) -.-> H1(1. Health check HTTP)
+            H1 --> H2(2. PySpark ingest)
+            H2 --> H3(3. Validate row counts)
+            H3 --> H4(4. dbt staging)
+            H4 --> H5(5. dbt marts)
+            H5 --> H6(6. dbt test assertions)
+        end
+    end
 
-    %% Storage Tiers
-    D[(PostgreSQL: Raw)]
-    F[(Postgres: Staging & Marts)]
+    subgraph CI [GitHub Actions CI/CD]
+        direction LR
+        I[🐙 Push / PR triggers ci.yml] --> J[Ubuntu / Python 3.10 / pip constraint]
+        J --> K[pytest with mock API]
+        K --> L[dbt test: not_null / unique / bounds]
+        L --> M[Blocks merge if tests fail]
+    end
 
-    %% Presentation & Orchestration
-    G[📊 Metabase Dashboard]
-    H((🕰️ Apache Airflow))
+    %% Styles
+    classDef default fill:#1E1E2E,stroke:#45475A,stroke-width:2px,color:#CDD6F4;
+    classDef source fill:#181825,stroke:#A6E3A1,stroke-width:2px,color:#A6E3A1;
+    classDef ingest fill:#181825,stroke:#FAB387,stroke-width:2px,color:#FAB387;
+    classDef store fill:#181825,stroke:#89B4FA,stroke-width:2px,color:#89B4FA;
+    classDef transform fill:#181825,stroke:#F38BA8,stroke-width:2px,color:#F38BA8;
+    classDef serve fill:#181825,stroke:#89B4FA,stroke-width:2px,color:#89B4FA;
+    classDef report fill:#181825,stroke:#A6E3A1,stroke-width:2px,color:#A6E3A1;
+    classDef orch fill:#181825,stroke:#CBA6F7,stroke-width:2px,color:#CBA6F7;
+    classDef cicd fill:#11111B,stroke:#94E2D5,stroke-width:2px,color:#94E2D5;
 
-    %% Data Flow
-    A --> C
-    B --> C
-    C -->|Extracts & Upserts| D
-    D --> E
-    E -->|Transforms & Tests| F
-    F -->|Powers| G
-
-    %% Orchestration Paths (Dotted)
-    H -.->|Triggers Daily| C
-    H -.->|Orchestrates| E
-
-    %% Styling
-    classDef storage fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
-    classDef compute fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px;
-    classDef dash fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef source fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
-    classDef orchestrator fill:#eceff1,stroke:#607d8b,stroke-width:2px;
-    
     class A,B source;
-    class C,E compute;
-    class D,F storage;
-    class G dash;
-    class H orchestrator;
+    class C ingest;
+    class D store;
+    class E transform;
+    class F serve;
+    class G report;
+    class Airflow,H,H1,H2,H3,H4,H5,H6 orch;
+    class CI,I,J,K,L,M cicd;
 ```
 
 ### 🔁 Data Flow Lifecycle
